@@ -1,241 +1,397 @@
-<!DOCTYPE html>
-<html lang="ar" dir="rtl">
-<head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Elite Performance - Workout System</title>
-    
-    <!-- Libraries -->
-    <script src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
-    <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
-    <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
-    <script src="https://cdn.tailwindcss.com"></script>
-    <link href="https://fonts.googleapis.com/css2?family=Cairo:wght@400;700;900&family=Oswald:wght@700&display=swap" rel="stylesheet">
-    
-    <style>
-        :root {
-            --brand-color: #dcfce7; /* Light Green / Neon */
-            --gold-accent: #fbbf24;
+import React, { useState, useEffect } from 'react';
+import { initializeApp } from 'firebase/app';
+import { 
+  getFirestore, 
+  doc, 
+  setDoc, 
+  getDoc, 
+  onSnapshot
+} from 'firebase/firestore';
+import { 
+  getAuth, 
+  signInAnonymously, 
+  signInWithCustomToken,
+  onAuthStateChanged 
+} from 'firebase/auth';
+
+// --- Firebase Configuration ---
+const firebaseConfig = JSON.parse(__firebase_config);
+const app = initializeApp(firebaseConfig);
+const auth = getAuth(app);
+const db = getFirestore(app);
+const appId = typeof __app_id !== 'undefined' ? __app_id : 'elite-workout-v2';
+
+export default function App() {
+  const [user, setUser] = useState(null);
+  const [loading, setLoading] = useState(true);
+  const [saving, setSaving] = useState(false);
+  const [clientName, setClientName] = useState('');
+  const [workoutTitle, setWorkoutTitle] = useState('ADVANCED TRAINING PROGRAM');
+  const [days, setDays] = useState([
+    { 
+      id: Date.now(), 
+      name: 'DAY 01', 
+      exercises: [{ id: 1, name: '', sets: '', reps: '', weight: '', rest: '', video: '', notes: '' }],
+      cardio: { activity: '', duration: '', intensity: '' }
+    }
+  ]);
+  const [showLinkModal, setShowLinkModal] = useState(false);
+  const [generatedLink, setGeneratedLink] = useState('');
+
+  // 1. Authentication (Rule 3)
+  useEffect(() => {
+    const initAuth = async () => {
+      try {
+        if (typeof __initial_auth_token !== 'undefined' && __initial_auth_token) {
+          await signInWithCustomToken(auth, __initial_auth_token);
+        } else {
+          await signInAnonymously(auth);
         }
-        body { 
-            font-family: 'Cairo', sans-serif; 
-            background-color: #0f172a; 
-            color: #f8fafc;
+      } catch (err) {
+        console.error("Auth error:", err);
+      }
+    };
+    initAuth();
+    const unsubscribe = onAuthStateChanged(auth, setUser);
+    return () => unsubscribe();
+  }, []);
+
+  // 2. Data Fetching & Real-time Sync (Rule 1 & 2)
+  useEffect(() => {
+    if (!user) return;
+
+    const urlParams = new URLSearchParams(window.location.search);
+    const workoutId = urlParams.get('id');
+
+    if (workoutId) {
+      // Path based on Rule 1: public data
+      const docRef = doc(db, 'artifacts', appId, 'public', 'data', 'workouts', workoutId);
+      
+      const unsubscribe = onSnapshot(docRef, (docSnap) => {
+        if (docSnap.exists()) {
+          const data = docSnap.data();
+          setClientName(data.clientName || '');
+          setWorkoutTitle(data.workoutTitle || '');
+          setDays(data.days || []);
         }
-        .header-font { font-family: 'Oswald', sans-serif; }
+        setLoading(false);
+      }, (error) => {
+        console.error("Sync error:", error);
+        setLoading(false);
+      });
+
+      return () => unsubscribe();
+    } else {
+      setLoading(false);
+    }
+  }, [user]);
+
+  // 3. Save/Update Logic
+  const saveWorkout = async () => {
+    if (!user) return;
+    setSaving(true);
+    
+    const urlParams = new URLSearchParams(window.location.search);
+    let workoutId = urlParams.get('id');
+    
+    // Create a new ID if it doesn't exist
+    if (!workoutId) {
+      workoutId = 'workout-' + Math.random().toString(36).substr(2, 9);
+    }
+
+    try {
+      await setDoc(doc(db, 'artifacts', appId, 'public', 'data', 'workouts', workoutId), {
+        clientName,
+        workoutTitle,
+        days,
+        updatedAt: new Date().toISOString(),
+        updatedBy: user.uid
+      });
+
+      const baseUrl = window.location.href.split('?')[0];
+      const finalLink = `${baseUrl}?id=${workoutId}`;
+      setGeneratedLink(finalLink);
+      setShowLinkModal(true);
+
+      // Update URL without refreshing for the coach
+      if (!urlParams.get('id')) {
+        window.history.pushState({}, '', finalLink);
+      }
+    } catch (error) {
+      console.error("Save error:", error);
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const addDay = () => {
+    setDays([...days, { 
+      id: Date.now(), 
+      name: `DAY ${String(days.length + 1).padStart(2, '0')}`, 
+      exercises: [{ id: Date.now() + 1, name: '', sets: '', reps: '', weight: '', rest: '', video: '', notes: '' }],
+      cardio: { activity: '', duration: '', intensity: '' }
+    }]);
+  };
+
+  if (loading) return (
+    <div className="min-h-screen bg-black flex flex-col items-center justify-center text-yellow-500 gap-4">
+      <div className="w-12 h-12 border-4 border-yellow-500 border-t-transparent rounded-full animate-spin"></div>
+      <p className="font-bold tracking-widest uppercase text-[10px]">Syncing Protocol...</p>
+    </div>
+  );
+
+  return (
+    <div className="min-h-screen pb-20 bg-slate-950 text-slate-100 font-sans selection:bg-yellow-500 selection:text-black" dir="ltr">
+      
+      {/* Link Modal */}
+      {showLinkModal && (
+        <div className="fixed inset-0 z-[100] flex items-center justify-center p-4 bg-black/90 backdrop-blur-md">
+          <div className="bg-slate-900 border border-yellow-500/30 p-8 rounded-[2rem] max-w-lg w-full shadow-2xl text-center">
+            <h3 className="text-yellow-500 font-black text-2xl mb-2 italic uppercase">Program Live! 🔥</h3>
+            <p className="text-slate-400 text-sm mb-6 leading-relaxed">الجدول الآن محفوظ على السحابة. انسخ الرابط وأرسله للعميل، أي تحديث للأوزان سيظهر عندك فوراً.</p>
+            <div className="bg-black/50 p-4 rounded-xl border border-white/5 mb-6 overflow-x-auto text-left">
+              <code className="text-blue-400 text-xs">{generatedLink}</code>
+            </div>
+            <button 
+              onClick={() => {
+                const el = document.createElement('textarea');
+                el.value = generatedLink;
+                document.body.appendChild(el);
+                el.select();
+                document.execCommand('copy');
+                document.body.removeChild(el);
+                setShowLinkModal(false);
+              }}
+              className="w-full bg-yellow-500 text-black font-black py-4 rounded-xl hover:bg-yellow-400 transition-all uppercase text-sm tracking-widest"
+            >
+              Copy Link & Close
+            </button>
+          </div>
+        </div>
+      )}
+
+      {/* Header */}
+      <header className="bg-slate-900 border-b border-white/5 pt-12 pb-24 px-6 relative overflow-hidden">
+        <div className="absolute top-0 right-0 w-full h-full opacity-10 pointer-events-none">
+          <div className="absolute top-[-10%] right-[-10%] w-[40%] h-[40%] bg-yellow-500 rounded-full blur-[120px]"></div>
+        </div>
         
-        @media print {
-            .no-print { display: none !important; }
-            body { background-color: white; color: black; padding: 0; }
-            .card-shadow { box-shadow: none !important; border: 1px solid #e2e8f0 !important; color: black !important; }
-            input { border: none !important; color: black !important; }
-            .exercise-row { border-bottom: 1px solid #eee !important; }
-        }
+        <div className="max-w-7xl mx-auto flex flex-col md:flex-row justify-between items-center gap-8 relative z-10">
+          <div>
+            <h1 className="text-5xl md:text-7xl font-black text-transparent bg-clip-text bg-gradient-to-r from-yellow-400 to-yellow-100 italic tracking-tighter uppercase leading-tight">
+              ELITE TRACKER
+            </h1>
+            <p className="text-yellow-500/60 font-bold tracking-[0.4em] mt-2 text-[10px] uppercase">Coach & Client Live Protocol</p>
+          </div>
+          
+          <div className="flex gap-3">
+            <button 
+              onClick={saveWorkout}
+              disabled={saving}
+              className="bg-yellow-500 hover:bg-yellow-400 text-black px-10 py-4 rounded-full font-black transition-all transform hover:scale-105 shadow-[0_0_30px_rgba(251,191,36,0.2)]"
+            >
+              {saving ? 'SYNCING...' : 'SAVE & UPDATE'}
+            </button>
+          </div>
+        </div>
+      </header>
 
-        .premium-card {
-            background: rgba(30, 41, 59, 0.7);
-            backdrop-filter: blur(10px);
-            border: 1px solid rgba(255, 255, 255, 0.1);
-        }
-    </style>
-</head>
-<body>
-    <div id="root"></div>
+      <main className="max-w-7xl mx-auto p-4 md:p-10 -mt-16 relative z-20">
+        {/* Identity Section */}
+        <div className="bg-slate-900/80 backdrop-blur-2xl border border-white/10 rounded-[2.5rem] p-10 mb-10 shadow-2xl">
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-12">
+            <div className="border-l-2 border-yellow-500/30 pl-6">
+              <label className="text-yellow-500 text-[10px] font-black uppercase tracking-[0.3em] mb-3 block opacity-70">Client Name</label>
+              <input 
+                className="bg-transparent w-full text-2xl font-black outline-none border-none placeholder-slate-800 focus:text-white"
+                placeholder="Client Name..."
+                value={clientName}
+                onChange={(e) => setClientName(e.target.value)}
+              />
+            </div>
+            <div>
+              <label className="text-yellow-500 text-[10px] font-black uppercase tracking-[0.3em] mb-3 block opacity-70">Program Goal</label>
+              <input 
+                className="bg-transparent w-full text-2xl font-black outline-none border-none placeholder-slate-800 focus:text-white"
+                placeholder="e.g. Mass Gainer..."
+                value={workoutTitle}
+                onChange={(e) => setWorkoutTitle(e.target.value)}
+              />
+            </div>
+          </div>
+        </div>
 
-    <script type="text/babel">
-        const { useState } = React;
+        {/* Days List */}
+        <div className="space-y-20">
+          {days.map((day, dIdx) => (
+            <section key={day.id} className="relative">
+              <div className="flex items-center gap-4 mb-8 px-6">
+                <div className="h-10 w-2 bg-yellow-500 rounded-full"></div>
+                <input 
+                  className="bg-transparent text-4xl font-black text-white outline-none focus:text-yellow-400 w-full uppercase italic tracking-tighter"
+                  value={day.name}
+                  onChange={(e) => {
+                    const newDays = [...days];
+                    newDays[dIdx].name = e.target.value;
+                    setDays(newDays);
+                  }}
+                />
+              </div>
 
-        const App = () => {
-            const [clientName, setClientName] = useState('');
-            const [workoutTitle, setWorkoutTitle] = useState('برنامج النخبة التدريبي');
-            const [days, setDays] = useState([
-                { 
-                    id: Date.now(), 
-                    name: 'اليوم الأول', 
-                    exercises: [{ id: 1, name: '', sets: '', reps: '', rest: '', video: '', notes: '' }],
-                    cardio: { activity: '', duration: '', intensity: '' }
-                }
-            ]);
-
-            const addDay = () => {
-                setDays([...days, { 
-                    id: Date.now(), 
-                    name: `اليوم ${days.length + 1}`, 
-                    exercises: [{ id: Date.now() + 1, name: '', sets: '', reps: '', rest: '', video: '', notes: '' }],
-                    cardio: { activity: '', duration: '', intensity: '' }
-                }]);
-            };
-
-            const updateExercise = (dayId, exId, field, value) => {
-                setDays(days.map(day => day.id === dayId 
-                    ? { ...day, exercises: day.exercises.map(ex => ex.id === exId ? { ...ex, [field]: value } : ex) }
-                    : day
-                ));
-            };
-
-            const updateCardio = (dayId, field, value) => {
-                setDays(days.map(day => day.id === dayId 
-                    ? { ...day, cardio: { ...day.cardio, [field]: value } }
-                    : day
-                ));
-            };
-
-            return (
-                <div className="min-h-screen pb-20">
-                    {/* Premium Header */}
-                    <header className="bg-slate-950 text-white pt-12 pb-20 px-6 relative overflow-hidden border-b border-yellow-500/20">
-                        <div className="absolute top-0 left-0 w-full h-full opacity-10 pointer-events-none">
-                            <div className="absolute top-[-10%] left-[-10%] w-[40%] h-[40%] bg-yellow-500 rounded-full blur-[120px]"></div>
-                        </div>
-                        
-                        <div className="max-w-6xl mx-auto flex flex-col md:flex-row justify-between items-center gap-8 relative z-10">
-                            <div className="text-center md:text-right">
-                                <h1 className="header-font text-5xl md:text-7xl font-black tracking-tighter text-transparent bg-clip-text bg-gradient-to-l from-yellow-400 to-yellow-100">
-                                    ELITE PERFORMANCE
-                                </h1>
-                                <p className="text-yellow-500/80 font-bold tracking-[0.2em] mt-2 text-sm uppercase">Advanced Training Systems</p>
-                            </div>
-                            
-                            <div className="flex gap-4 no-print">
-                                <button 
-                                    onClick={() => window.print()} 
-                                    className="bg-yellow-500 hover:bg-yellow-400 text-black px-10 py-4 rounded-full font-black transition-all transform hover:scale-105 shadow-[0_0_20px_rgba(251,191,36,0.3)]"
-                                >
-                                    حفظ كـ PDF
-                                </button>
-                            </div>
-                        </div>
-                    </header>
-
-                    <main className="max-w-6xl mx-auto p-4 md:p-10 -mt-12 relative z-20">
-                        {/* Info Section */}
-                        <div className="premium-card rounded-[2.5rem] p-8 mb-10 shadow-2xl card-shadow">
-                            <div className="grid grid-cols-1 md:grid-cols-2 gap-10">
-                                <div className="border-r border-white/5 pr-4">
-                                    <label className="text-yellow-500 text-[10px] font-black uppercase tracking-[0.2em] mb-2 block">Client Identity</label>
-                                    <input 
-                                        className="bg-transparent w-full text-3xl font-black outline-none border-none placeholder-slate-700 focus:text-white transition-all"
-                                        placeholder="اسم المتدرب..."
-                                        value={clientName}
-                                        onChange={(e) => setClientName(e.target.value)}
-                                    />
-                                </div>
-                                <div>
-                                    <label className="text-yellow-500 text-[10px] font-black uppercase tracking-[0.2em] mb-2 block">Program Phase</label>
-                                    <input 
-                                        className="bg-transparent w-full text-3xl font-black outline-none border-none placeholder-slate-700 focus:text-white transition-all"
-                                        placeholder="المرحلة التدريبية..."
-                                        value={workoutTitle}
-                                        onChange={(e) => setWorkoutTitle(e.target.value)}
-                                    />
-                                </div>
-                            </div>
-                        </div>
-
-                        {/* Workout Days */}
-                        <div className="space-y-16">
-                            {days.map((day) => (
-                                <section key={day.id} className="page-break">
-                                    <div className="flex items-center gap-4 mb-6 px-6">
-                                        <div className="h-8 w-2 bg-yellow-500 rounded-full"></div>
-                                        <input 
-                                            className="bg-transparent text-3xl font-black text-white outline-none focus:text-yellow-400 w-full"
-                                            value={day.name}
-                                            onChange={(e) => setDays(days.map(d => d.id === day.id ? {...d, name: e.target.value} : d))}
-                                        />
-                                    </div>
-
-                                    <div className="premium-card rounded-[2.5rem] shadow-2xl border border-white/5 overflow-hidden card-shadow">
-                                        <div className="overflow-x-auto">
-                                            <table className="w-full text-right">
-                                                <thead>
-                                                    <tr className="bg-white/5 text-yellow-500/50 text-[10px] font-black uppercase tracking-widest border-b border-white/5">
-                                                        <th className="p-6">التمرين</th>
-                                                        <th className="p-6 text-center">مجموعات</th>
-                                                        <th className="p-6 text-center">عدات</th>
-                                                        <th className="p-6 text-center">راحة</th>
-                                                        <th className="p-6">فيديو الشرح (رابط)</th>
-                                                        <th className="p-6 no-print"></th>
-                                                    </tr>
-                                                </thead>
-                                                <tbody className="divide-y divide-white/5">
-                                                    {day.exercises.map((ex) => (
-                                                        <tr key={ex.id} className="exercise-row hover:bg-white/[0.02] transition-colors">
-                                                            <td className="p-5">
-                                                                <input className="bg-transparent w-full font-bold text-white outline-none" placeholder="أدخل التمرين..." value={ex.name} onChange={(e) => updateExercise(day.id, ex.id, 'name', e.target.value)} />
-                                                            </td>
-                                                            <td className="p-5 w-24 text-center">
-                                                                <input className="bg-transparent w-full text-center font-black text-yellow-500 outline-none" placeholder="0" value={ex.sets} onChange={(e) => updateExercise(day.id, ex.id, 'sets', e.target.value)} />
-                                                            </td>
-                                                            <td className="p-5 w-24 text-center">
-                                                                <input className="bg-transparent w-full text-center font-black text-white outline-none" placeholder="0" value={ex.reps} onChange={(e) => updateExercise(day.id, ex.id, 'reps', e.target.value)} />
-                                                            </td>
-                                                            <td className="p-5 w-24 text-center">
-                                                                <input className="bg-transparent w-full text-center font-bold text-slate-500 outline-none" placeholder="60s" value={ex.rest} onChange={(e) => updateExercise(day.id, ex.id, 'rest', e.target.value)} />
-                                                            </td>
-                                                            <td className="p-5">
-                                                                <input className="bg-transparent w-full text-xs text-blue-400 underline outline-none" placeholder="ضع رابط YouTube هنا..." value={ex.video} onChange={(e) => updateExercise(day.id, ex.id, 'video', e.target.value)} />
-                                                            </td>
-                                                            <td className="p-5 no-print">
-                                                                <button onClick={() => setDays(days.map(d => d.id === day.id ? {...d, exercises: d.exercises.filter(e => e.id !== ex.id)} : d))} className="text-slate-600 hover:text-red-500">✕</button>
-                                                            </td>
-                                                        </tr>
-                                                    ))}
-                                                </tbody>
-                                            </table>
-                                        </div>
-                                        
-                                        {/* Cardio Section */}
-                                        <div className="p-8 bg-black/20 border-t border-white/5">
-                                            <h4 className="text-yellow-500 text-xs font-black uppercase tracking-widest mb-4 flex items-center gap-2">
-                                                <span>⚡ تمارين الكارديو</span>
-                                            </h4>
-                                            <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
-                                                <input 
-                                                    className="bg-white/5 rounded-xl p-4 outline-none border border-white/10 focus:border-yellow-500/50" 
-                                                    placeholder="نوع الكارديو (مثلاً مشي سريع)..."
-                                                    value={day.cardio.activity}
-                                                    onChange={(e) => updateCardio(day.id, 'activity', e.target.value)}
-                                                />
-                                                <input 
-                                                    className="bg-white/5 rounded-xl p-4 outline-none border border-white/10 focus:border-yellow-500/50" 
-                                                    placeholder="المدة (بالدقائق)..."
-                                                    value={day.cardio.duration}
-                                                    onChange={(e) => updateCardio(day.id, 'duration', e.target.value)}
-                                                />
-                                                <input 
-                                                    className="bg-white/5 rounded-xl p-4 outline-none border border-white/10 focus:border-yellow-500/50" 
-                                                    placeholder="الشدة (مثلاً ضربات القلب 130)..."
-                                                    value={day.cardio.intensity}
-                                                    onChange={(e) => updateCardio(day.id, 'intensity', e.target.value)}
-                                                />
-                                            </div>
-                                        </div>
-
-                                        <button 
-                                            onClick={() => setDays(days.map(d => d.id === day.id ? { ...d, exercises: [...d.exercises, { id: Date.now(), name: '', sets: '', reps: '', rest: '', video: '', notes: '' }] } : d))}
-                                            className="w-full py-4 text-xs font-black text-slate-500 hover:text-yellow-500 uppercase tracking-widest no-print transition-colors"
-                                        >
-                                            + إضافة تمرين للجدول
-                                        </button>
-                                    </div>
-                                </section>
-                            ))}
-                        </div>
-
-                        <button 
-                            onClick={addDay}
-                            className="w-full py-16 border-2 border-dashed border-white/10 rounded-[3rem] mt-16 text-slate-600 font-black text-2xl hover:border-yellow-500 hover:text-yellow-500 transition-all no-print"
-                        >
-                            إضافة يوم جديد للموسم +
-                        </button>
-                    </main>
+              {/* Exercises Table */}
+              <div className="bg-slate-900 border border-white/5 rounded-[2.5rem] overflow-hidden shadow-2xl mb-6">
+                <div className="overflow-x-auto">
+                  <table className="w-full text-left border-collapse">
+                    <thead>
+                      <tr className="bg-white/5 text-yellow-500/50 text-[10px] font-black uppercase tracking-widest">
+                        <th className="p-6">EXERCISE</th>
+                        <th className="p-6 text-center">SETS</th>
+                        <th className="p-6 text-center">REPS</th>
+                        <th className="p-6 text-center bg-yellow-500/10 text-yellow-500 italic">CLIENT LOAD (KG)</th>
+                        <th className="p-6 text-center">REST</th>
+                        <th className="p-6">TUTORIAL / NOTES</th>
+                        <th className="p-6 w-12"></th>
+                      </tr>
+                    </thead>
+                    <tbody className="divide-y divide-white/5">
+                      {day.exercises.map((ex, eIdx) => (
+                        <tr key={ex.id} className="hover:bg-white/[0.02] transition-colors">
+                          <td className="p-6 min-w-[200px]">
+                            <input 
+                              className="bg-transparent w-full font-bold outline-none placeholder-slate-700" 
+                              placeholder="Exercise Name" 
+                              value={ex.name} 
+                              onChange={(e) => {
+                                const newDays = [...days];
+                                newDays[dIdx].exercises[eIdx].name = e.target.value;
+                                setDays(newDays);
+                              }} 
+                            />
+                          </td>
+                          <td className="p-6 w-20">
+                            <input className="bg-transparent w-full text-center font-black outline-none" value={ex.sets} placeholder="0" onChange={(e) => {
+                               const newDays = [...days];
+                               newDays[dIdx].exercises[eIdx].sets = e.target.value;
+                               setDays(newDays);
+                            }} />
+                          </td>
+                          <td className="p-6 w-20">
+                            <input className="bg-transparent w-full text-center font-black outline-none" value={ex.reps} placeholder="0" onChange={(e) => {
+                               const newDays = [...days];
+                               newDays[dIdx].exercises[eIdx].reps = e.target.value;
+                               setDays(newDays);
+                            }} />
+                          </td>
+                          <td className="p-6 w-32 bg-yellow-500/5">
+                            <input 
+                              className="bg-transparent w-full text-center font-black text-yellow-500 outline-none placeholder-yellow-900/30" 
+                              value={ex.weight} 
+                              placeholder="0.0" 
+                              onChange={(e) => {
+                               const newDays = [...days];
+                               newDays[dIdx].exercises[eIdx].weight = e.target.value;
+                               setDays(newDays);
+                            }} />
+                          </td>
+                          <td className="p-6 w-24 text-center">
+                            <input className="bg-transparent w-full text-center font-bold text-slate-500 outline-none text-xs" value={ex.rest} placeholder="60s" onChange={(e) => {
+                               const newDays = [...days];
+                               newDays[dIdx].exercises[eIdx].rest = e.target.value;
+                               setDays(newDays);
+                            }} />
+                          </td>
+                          <td className="p-6 min-w-[150px]">
+                            <input className="bg-transparent w-full text-[10px] text-blue-400 outline-none" placeholder="Video link or Coach notes..." value={ex.video} onChange={(e) => {
+                               const newDays = [...days];
+                               newDays[dIdx].exercises[eIdx].video = e.target.value;
+                               setDays(newDays);
+                            }} />
+                          </td>
+                          <td className="p-6 text-center">
+                            <button onClick={() => {
+                              const newDays = [...days];
+                              newDays[dIdx].exercises = newDays[dIdx].exercises.filter((_, i) => i !== eIdx);
+                              setDays(newDays);
+                            }} className="opacity-20 hover:opacity-100 text-red-500">✕</button>
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
                 </div>
-            );
-        };
+                
+                <button 
+                  onClick={() => {
+                    const newDays = [...days];
+                    newDays[dIdx].exercises.push({ id: Date.now(), name: '', sets: '', reps: '', weight: '', rest: '', video: '', notes: '' });
+                    setDays(newDays);
+                  }}
+                  className="w-full py-5 text-[10px] font-black text-slate-500 hover:text-yellow-500 transition-all uppercase tracking-widest border-t border-white/5 bg-white/[0.01]"
+                >
+                  + Add Exercise
+                </button>
+              </div>
 
-            const root = ReactDOM.createRoot(document.getElementById('root'));
-            root.render(<App />);
-    </script>
-</body>
-</html>
+              {/* Cardio Section */}
+              <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+                <div className="bg-slate-900 border border-white/5 rounded-2xl p-4 flex flex-col gap-2">
+                  <span className="text-[10px] font-black text-yellow-500/50 uppercase tracking-widest">Cardio Activity</span>
+                  <input 
+                    className="bg-transparent font-bold text-white outline-none placeholder-slate-700"
+                    placeholder="e.g. Incline Walk"
+                    value={day.cardio?.activity || ''}
+                    onChange={(e) => {
+                      const newDays = [...days];
+                      if (!newDays[dIdx].cardio) newDays[dIdx].cardio = {};
+                      newDays[dIdx].cardio.activity = e.target.value;
+                      setDays(newDays);
+                    }}
+                  />
+                </div>
+                <div className="bg-slate-900 border border-white/5 rounded-2xl p-4 flex flex-col gap-2">
+                  <span className="text-[10px] font-black text-yellow-500/50 uppercase tracking-widest">Duration</span>
+                  <input 
+                    className="bg-transparent font-bold text-white outline-none placeholder-slate-700"
+                    placeholder="e.g. 20 mins"
+                    value={day.cardio?.duration || ''}
+                    onChange={(e) => {
+                      const newDays = [...days];
+                      if (!newDays[dIdx].cardio) newDays[dIdx].cardio = {};
+                      newDays[dIdx].cardio.duration = e.target.value;
+                      setDays(newDays);
+                    }}
+                  />
+                </div>
+                <div className="bg-slate-900 border border-white/5 rounded-2xl p-4 flex flex-col gap-2">
+                  <span className="text-[10px] font-black text-yellow-500/50 uppercase tracking-widest">Intensity</span>
+                  <input 
+                    className="bg-transparent font-bold text-white outline-none placeholder-slate-700"
+                    placeholder="e.g. Moderate"
+                    value={day.cardio?.intensity || ''}
+                    onChange={(e) => {
+                      const newDays = [...days];
+                      if (!newDays[dIdx].cardio) newDays[dIdx].cardio = {};
+                      newDays[dIdx].cardio.intensity = e.target.value;
+                      setDays(newDays);
+                    }}
+                  />
+                </div>
+              </div>
+            </section>
+          ))}
+        </div>
+
+        <button 
+          onClick={addDay}
+          className="w-full py-16 border-2 border-dashed border-white/5 rounded-[3rem] mt-12 text-slate-800 font-black text-xl hover:border-yellow-500/30 hover:text-yellow-500/30 hover:bg-yellow-500/[0.02] transition-all uppercase italic tracking-widest"
+        >
+          Add Training Protocol Day
+        </button>
+      </main>
+
+      {/* Persistence Note */}
+      <footer className="max-w-7xl mx-auto px-10 pt-10 text-slate-600 text-[10px] uppercase font-bold tracking-widest text-center">
+        Cloud Sync Enabled • Data persists on the cloud for real-time coaching.
+      </footer>
+    </div>
+  );
